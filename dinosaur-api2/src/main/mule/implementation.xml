@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:scripting="http://www.mulesoft.org/schema/mule/scripting"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:s3="http://www.mulesoft.org/schema/mule/s3"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/s3 http://www.mulesoft.org/schema/mule/s3/current/mule-s3.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/scripting http://www.mulesoft.org/schema/mule/scripting/current/mule-scripting.xsd">
+	<flow name="fileUpload">
+		<http:request method="POST" doc:name="predict " doc:id="00547236-45d7-4f92-8f5b-5fd4f496a0bf" target="response" url="https://api.einstein.ai/v1/vision/predict" sendBodyMode="ALWAYS" requestStreamingMode="NEVER">
+			<http:body ><![CDATA[#[%dw 2.0
+import dw::module::Multipart
+import * from dw::core::Binaries
+output multipart/form-data
+var filebase64 = toBase64(payload)
+---
+{
+  parts:{
+	"modelId": {
+		"headers" : {
+			"Content-Disposition": {
+				"name": "modelId",
+			}
+		},
+		content: "CXEOSEWQOAVL6XPEIFKFGSYEKQ"
+	},
+	"sampleBase64Content" : {
+		"headers" : {
+			"Content-Disposition" : {
+				"name": "sampleBase64Content"
+			}
+		},
+		content: filebase64
+	}
+  }
+}]]]></http:body>
+			<http:headers ><![CDATA[#[output application/java
+---
+{
+	"Cache-Control" : "no-cache",
+	"Authorization" : "Bearer " ++ p('einstein.token')
+}]]]></http:headers>
+		</http:request>
+		<set-variable value="#[%dw 2.0
+import * from dw::core::Strings
+output application/json
+---
+{&quot;fileName&quot; : vars.response.probabilities[0].label 
+              ++ '/' ++ vars.response.probabilities[0].label 
+              ++ '_' ++ (attributes.queryParams.name default &quot;&quot;)
+              ++ '_' ++ (attributes.queryParams.age default &quot;&quot;) 
+              ++ '_' ++ (attributes.queryParams.Long default &quot;&quot;) 
+              ++ '_' ++ (attributes.queryParams.Lad default &quot;&quot;) 
+              ++ '.' ++ substringAfter(substringBefore(payload.^mediaType, &quot;;&quot;), &quot;/&quot;),
+    &quot;user_info&quot;: {
+          &quot;user_name&quot;: attributes.queryParams.name,
+          &quot;age&quot; : attributes.queryParams.age,
+          &quot;location_Long&quot;: attributes.queryParams.Long,
+          &quot;location_Lad&quot;: attributes.queryParams.Lad
+    }             
+}]" doc:name="Set myVar" doc:id="934fabf5-fd60-458e-b258-d01ab4b1015c" variableName="myVar" />
+		<s3:create-object doc:name="Create object" doc:id="10c9d239-4d3c-4776-bed6-14d82da558f3" config-ref="Amazon_S3_Configuration" bucketName="#[p('s3.bucketName')]" key="#[vars.myVar.fileName]"/>
+		<logger level="DEBUG" doc:name="Logger" doc:id="1e01a564-7d83-41cf-a3e0-5d6caff851ec" message="#[payload]" />
+		<s3:create-object-presigned-uri doc:name="Create object presigned uri" doc:id="6f1ab830-4484-4075-8c05-8e24c7290321" config-ref="Amazon_S3_Configuration" bucketName="#[p('s3.bucketName')]" key="#[vars.myVar.fileName]" method="GET" target="uploadPhotoURL"/>
+		<logger level="INFO" doc:name="Logger_After_accessing einstein_vision_api" doc:id="bb405a2a-d15e-45d8-ba7e-2c0196a7c4ff" message="Logger_After_accessing einstein_vision_api"/>
+		<s3:create-object-presigned-uri doc:name="Create object presigned uri" doc:id="3cc65171-7f0a-4924-aac1-2f4312c70a45" config-ref="Amazon_S3_Configuration" bucketName="#[p('s3.bucketName')]" key="#[vars.response.probabilities[0].label++'.png']" method="GET" target="samplePhotoURL"/>
+		<set-variable value="#[%dw 2.0
+output application/json
+---
+[] as Array]" doc:name="Set Variable" doc:id="ae5f3c5e-136d-4873-9e97-2d0c65dba6cd" variableName="friendlist" />
+		<s3:list-objects doc:name="List objects" doc:id="d5d46973-db66-4b28-9060-a06b9bd1797e" config-ref="Amazon_S3_Configuration" bucketName="#[p('s3.bucketName')]" prefix="#[vars.response.probabilities[0].label ++ '/']" />
+		<foreach doc:name="For Each" doc:id="0f9bf267-47f1-4523-9bc5-451b857f3c47" collection="#[output application/json
+---
+payload['key'] filter ($ != vars.myVar.fileName)]">
+			<s3:create-object-presigned-uri doc:name="Create object presigned uri" doc:id="db29fb15-21ef-4c60-afb7-21e66c8e3b99" config-ref="Amazon_S3_Configuration" bucketName="#[p('s3.bucketName')]" key="#[payload]" method="GET" target="friendPhotoURL" />
+			<ee:transform doc:name="Transform Message" doc:id="a5e4bb34-01fb-4988-b1f8-f7ccafd712d6" >
+				<ee:message >
+					<ee:set-payload ><![CDATA[%dw 2.0
+import * from dw::core::Strings
+output application/json
+var friendInfo = substringBefore(payload, ".") splitBy("_")
+---
+{
+    "user_name": friendInfo[1],
+    "age" : friendInfo[2],
+    "location_Long": friendInfo[3],
+    "location_Lad": friendInfo[4],
+    "url" : vars.friendPhotoURL
+}]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+			<set-variable value="#[vars.friendlist + payload]" doc:name="Set Variable" doc:id="72762979-f939-4c31-99cb-3ac9ad1cff95" variableName="friendlist" />
+		</foreach>
+		<ee:transform doc:name="Transform Message" doc:id="1597f835-5b74-4216-91df-dc44d23f6225" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+  "dinosaurs_info": { 
+      "uploadPhotoURL" : vars.uploadPhotoURL,
+      "samplePhotoURL" : vars.samplePhotoURL,
+      "power": round(random() * 100),
+      "speed": round(random() * 100),
+      "attack": round(random() * 100),
+      "defence": round(random() * 100),
+      "Intelligence": round(random() * 100)
+      },
+     "user_info": vars.myVar.user_info,
+  "friend_list": vars.friendlist
+  }]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+    
+</flow>
+	<flow name="implementationFlow" doc:id="830523e6-5c68-4c7b-bd4f-0fd6ed88dd0a" >
+		<http:listener doc:name="Listener" doc:id="528fa867-cb87-4a6c-817c-0bc49e0a6e3c" config-ref="dinosaur-api-httpListenerConfig" path="/test"/>
+		<set-variable value="#[attributes.queryParams.fileName]" doc:name="Set Variable" doc:id="a65efefc-a972-47a7-8a45-6e4081306e6c" variableName="fileName"/>
+		<s3:create-object doc:name="Copy_of_Create object" doc:id="3242869c-2885-40ed-967e-03a6db1e67d2" config-ref="Amazon_S3_Configuration" bucketName="#[p('s3.bucketName')]" key="#[attributes.queryParams.fileName]" >
+			<s3:object-content ><![CDATA[#[payload.parts[0].content]]]></s3:object-content>
+		</s3:create-object>
+		<s3:create-object-presigned-uri doc:name="Copy_of_Create object presigned uri" doc:id="a9e7341a-5589-4040-a81f-ac06a20491d8" config-ref="Amazon_S3_Configuration" bucketName="#[p('s3.bucketName')]" key="#[vars.fileName]" method="GET" target="uploadPhotoURL" />
+		<ee:transform doc:name="Transform Message" doc:id="23ec66f2-21b4-41b3-b12f-33b267c54598" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+vars.uploadPhotoURL]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</flow>
+	<flow name="Copy_of_implementationFlow" doc:id="b3bb557b-aea4-4d72-8ab1-a8a602a04e71" >
+		<http:listener doc:name="Copy_of_Listener" doc:id="4cbeca7d-6d8e-4a40-aae9-967f4826ca40" config-ref="dinosaur-api-httpListenerConfig" path="/delete" />
+		<s3:delete-object doc:name="Delete object" doc:id="3d3cc6c7-38ee-4caa-86c7-e48b3bf7101f" config-ref="Amazon_S3_Configuration" bucketName="#[p('s3.bucketName')]" key="#[attributes.queryParams.fileName]"/>
+		<s3:list-objects doc:name="Copy_of_Copy_of_List objects" doc:id="b6b788cc-a32e-4cbb-a1ec-73f56ae9631a" config-ref="Amazon_S3_Configuration" bucketName="#[p('s3.bucketName')]" />
+		<ee:transform doc:name="Copy_of_Transform Message" doc:id="4b394694-ba06-4522-a6cb-f6e9647393ea" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+payload['key']]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</flow>
+	
+</mule>
